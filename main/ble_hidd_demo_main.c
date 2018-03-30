@@ -41,18 +41,17 @@
 #include "driver/gpio.h"
 #include "driver/uart.h"
 #include "hid_dev.h"
-#include "keyboard.h"
+
+#include "keylayouts.h"
 
 #define GATTS_TAG "FABI/FLIPMOUSE"
 
 static uint16_t hid_conn_id = 0;
 static bool sec_conn = false;
 static uint8_t keycode_modifier;
-static uint8_t keycode_deadkey_first;
 static uint8_t keycode_arr[6];
-//static joystick_data_t joystick;//currently unused, no joystick implemented
-static config_data_t config;
 
+static config_data_t config;
 
 #define CHAR_DECLARATION_SIZE   (sizeof(uint8_t))
 
@@ -92,77 +91,6 @@ static esp_ble_adv_params_t hidd_adv_params = {
     .channel_map        = ADV_CHNL_ALL,
     .adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
 };
-
-/*
-void IRAM_ATTR gpio_isr_handler(void* arg)
-{
-    uint32_t gpio_num = (uint32_t) arg;
-    xQueueSendFromISR(gpio_evt_queue, &gpio_num, NULL);
-}
-
-void gpio_task_example(void* arg)
-{
-    static uint8_t i = 0;
-    uint32_t io_num;
-    for(;;) {
-        if(xQueueReceive(gpio_evt_queue, &io_num, portMAX_DELAY)) {
-            printf("GPIO[%d] intr, val: %d\n", io_num, gpio_get_level(io_num));
-            if(i == 0) {
-            ++i;
-            }
-        }
-    }
-}
-
-static void gpio_demo_init(void)
-{
-    gpio_config_t io_conf;
-    //disable interrupt
-    io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
-    //set as output mode        
-    io_conf.mode = GPIO_MODE_OUTPUT;
-    //bit mask of the pins that you want to set,e.g.GPIO18/19
-    io_conf.pin_bit_mask = GPIO_OUTPUT_PIN_SEL;
-    //disable pull-down mode
-    io_conf.pull_down_en = 0;
-    //disable pull-up mode
-    io_conf.pull_up_en = 0;
-    //configure GPIO with the given settings
-    gpio_config(&io_conf);
-
-    //interrupt of rising edge
-    io_conf.intr_type = GPIO_PIN_INTR_POSEDGE;
-    //bit mask of the pins, use GPIO4/5 here
-    io_conf.pin_bit_mask = GPIO_INPUT_PIN_SEL;
-    //set as input mode    
-    io_conf.mode = GPIO_MODE_INPUT;
-    //enable pull-up mode
-    io_conf.pull_up_en = 1;
-    gpio_config(&io_conf);
-
-    //change gpio intrrupt type for one pin
-    gpio_set_intr_type(GPIO_INPUT_IO_0, GPIO_INTR_ANYEDGE);
-
-    //create a queue to handle gpio event from isr
-    gpio_evt_queue = xQueueCreate(10, sizeof(uint32_t));
-    //start gpio task
-    xTaskCreate(gpio_task_example, "gpio_task_example", 2048, NULL, 10, NULL);
-
-    //install gpio isr service
-    gpio_install_isr_service(ESP_INTR_FLAG_DEFAULT);
-    //hook isr handler for specific gpio pin
-    gpio_isr_handler_add(GPIO_INPUT_IO_0, gpio_isr_handler, (void*) GPIO_INPUT_IO_0);
-    //hook isr handler for specific gpio pin
-    gpio_isr_handler_add(GPIO_INPUT_IO_1, gpio_isr_handler, (void*) GPIO_INPUT_IO_1);
-
-    //remove isr handler for gpio number.
-    gpio_isr_handler_remove(GPIO_INPUT_IO_0);
-    //hook isr handler for specific gpio pin again
-    gpio_isr_handler_add(GPIO_INPUT_IO_0, gpio_isr_handler, (void*) GPIO_INPUT_IO_0);
-
-}*/
-
-
 
 static void hidd_event_callback(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param)
 {
@@ -269,7 +197,6 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
     }
 }
 
-
 void update_config()
 {
     nvs_handle my_handle;
@@ -277,366 +204,13 @@ void update_config()
     if(err != ESP_OK) ESP_LOGE("MAIN","error opening NVS");
     err = nvs_set_u8(my_handle, "btname_i", config.bt_device_name_index);
     if(err != ESP_OK) ESP_LOGE("MAIN","error saving NVS - bt name");
-    err = nvs_set_u8(my_handle, "locale", config.locale);
-    if(err != ESP_OK) ESP_LOGE("MAIN","error saving NVS - locale");
     printf("Committing updates in NVS ... ");
     err = nvs_commit(my_handle);
     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
     nvs_close(my_handle);
 }
 
-void process_uart(uint8_t *input, uint16_t len)
-{
-    //tested commands:
-    //ID_FABI
-    //ID_FLIPMOUSE
-    //ID
-    //PMx (PM0 PM1)
-    //GP
-    //DPx (number of paired device, 1-x)
-    //KW (+layouts)
-    //KD/KU
-    //KR
-    //KL
-    
-    //untested commands:
-    //KC
-    //M
-    
-    //TBD: joystick (everything)
-    // KK (if necessary)
-    
-    if(len < 2) return;
-    //easier this way than typecast in each str* function
-    const char *input2 = (const char *) input;
-    int counter;
-    char nl = '\n';
-    uint8_t keycode = 0;
-    esp_ble_bond_dev_t *btdevlist = NULL;
-    #define DEBUG_TAG "UART_PARSER"
-    
-    /**++++ commands without parameters ++++*/
-    //get module ID
-    if(strcmp(input2,"ID") == 0) 
-    {
-        uart_write_bytes(EX_UART_NUM, MODULE_ID, sizeof(MODULE_ID));
-        ESP_LOGD(DEBUG_TAG,"sending module id (ID)");
-        return;
-    }
-
-    //get all BT pairings
-    if(strcmp(input2,"GP") == 0)
-    {
-        counter = esp_ble_get_bond_device_num();
-        if(counter > 0)
-        {
-            btdevlist = (esp_ble_bond_dev_t *) malloc(sizeof(esp_ble_bond_dev_t)*counter);
-            if(btdevlist != NULL)
-            {
-                if(esp_ble_get_bond_device_list(&counter,btdevlist) == ESP_OK)
-                {
-                    ESP_LOGI(DEBUG_TAG,"bonded devices (starting with index 0):");
-                    ESP_LOGI(DEBUG_TAG,"---------------------------------------");
-                    for(uint8_t i = 0; i<counter;i++)
-                    {
-                        //print on monitor & external uart
-                        esp_log_buffer_hex(DEBUG_TAG, btdevlist[i].bd_addr, sizeof(esp_bd_addr_t));
-                        uart_write_bytes(EX_UART_NUM, (char *)btdevlist[i].bd_addr, sizeof(esp_bd_addr_t));
-                        uart_write_bytes(EX_UART_NUM,&nl,sizeof(nl)); //newline
-                    }
-                    ESP_LOGI(DEBUG_TAG,"---------------------------------------");
-                } else ESP_LOGE(DEBUG_TAG,"error getting device list");
-            } else ESP_LOGE(DEBUG_TAG,"error allocating memory for device list");
-        } else ESP_LOGE(DEBUG_TAG,"error getting bonded devices count or no devices bonded");
-        return;
-    }
-    
-    //joystick: update data (send a report)
-    if(strcmp(input2,"JU") == 0) 
-    {
-        //TBD: joystick
-        ESP_LOGD(DEBUG_TAG,"TBD! joystick: send report (JU)");
-        return;
-    }
-    
-    //keyboard: release all
-    if(strcmp(input2,"KR") == 0)
-    {
-        for(uint8_t i = 0; i < sizeof(keycode_arr); i++) keycode_arr[i] = 0;
-        keycode_modifier = 0;
-        keycode_deadkey_first = 0;
-        esp_hidd_send_keyboard_value(hid_conn_id,keycode_modifier,keycode_arr,sizeof(keycode_arr));
-        ESP_LOGD(DEBUG_TAG,"keyboard: release all (KR)");
-        return;
-    }
-    
-    /**++++ commands with parameters ++++*/
-    switch(input[0])
-    {
-        case 'K': //keyboard
-            //key up
-            if(input[1] == 'U' && len == 3) 
-            {
-                remove_keycode(input[2],keycode_arr);
-                esp_hidd_send_keyboard_value(hid_conn_id,keycode_modifier,keycode_arr,sizeof(keycode_arr));
-                return;
-            }
-            //key down
-            if(input[1] == 'D' && len == 3) 
-            {
-                add_keycode(input[2],keycode_arr);
-                esp_hidd_send_keyboard_value(hid_conn_id,keycode_modifier,keycode_arr,sizeof(keycode_arr));
-                return;
-            }
-            //keyboard, set locale
-            if(input[1] == 'L' && len == 3) 
-            { 
-                if(input[2] < LAYOUT_MAX) 
-                {
-                    config.locale = input[2];
-                    update_config();
-                } else ESP_LOGE(DEBUG_TAG,"Locale out of range");
-                return;
-            }
-            
-            //keyboard, write
-            if(input[1] == 'W')
-            {
-                ESP_LOGI(DEBUG_TAG,"sending keyboard write, len: %d (bytes, not characters!)",len-2);
-                for(uint16_t i = 2; i<len; i++)
-                {
-                    if(input[i] == '\0') 
-                    {
-                        ESP_LOGI(DEBUG_TAG,"terminated string, ending KW");
-                        break;
-                    }
-                    keycode = parse_for_keycode(input[i],config.locale,&keycode_modifier,&keycode_deadkey_first); //send current byte to parser
-                    if(keycode == 0) 
-                    {
-                        ESP_LOGI(DEBUG_TAG,"keycode is 0 for 0x%X, skipping to next byte",input[i]);
-                        continue; //if no keycode is found,skip to next byte (might be a 16bit UTF8)
-                    }
-                    ESP_LOGI(DEBUG_TAG,"keycode: %d, modifier: %d, deadkey: %d",keycode,keycode_modifier,keycode_deadkey_first);
-                    //TODO: do deadkey sequence...
-                    
-                    //if a keycode is found, add to keycodes for HID
-                    add_keycode(keycode,keycode_arr);
-                    ESP_LOGI(DEBUG_TAG,"keycode arr, adding and removing:");
-                    esp_log_buffer_hex(DEBUG_TAG,keycode_arr,6);
-                    //send to device
-                    esp_hidd_send_keyboard_value(hid_conn_id,keycode_modifier,keycode_arr,sizeof(keycode_arr));
-                    //wait 1 tick to release key
-                    vTaskDelay(1); //suspend for 1 tick
-                    //remove key & send report
-                    remove_keycode(keycode,keycode_arr);
-                    esp_log_buffer_hex(DEBUG_TAG,keycode_arr,6);
-                    esp_hidd_send_keyboard_value(hid_conn_id,keycode_modifier,keycode_arr,sizeof(keycode_arr));
-                    vTaskDelay(1); //suspend for 1 tick
-                }
-                return;
-            }
-            
-            //keyboard, get keycode for unicode bytes
-            if(input[1] == 'C' && len == 4) 
-            {
-                keycode = get_keycode(input[2],config.locale,&keycode_modifier,&keycode_deadkey_first);
-                //if the first byte is not sufficient, try with second byte.
-                if(keycode == 0) 
-                { 
-                    keycode = get_keycode(input[3],config.locale,&keycode_modifier,&keycode_deadkey_first);
-                }
-                //first the keycode + modifier are sent.
-                //deadkey starting key is sent afterwards (0 if not necessary)
-                uart_write_bytes(EX_UART_NUM, (char *)&keycode, sizeof(keycode));
-                uart_write_bytes(EX_UART_NUM, (char *)&keycode_modifier, sizeof(keycode_modifier));
-                uart_write_bytes(EX_UART_NUM, (char *)&keycode_deadkey_first, sizeof(keycode_deadkey_first));
-                uart_write_bytes(EX_UART_NUM, &nl, sizeof(nl));
-                return;
-            }
-            //keyboard, get unicode mapping between 2 locales
-            if(input[1] == 'K' && len == 6) 
-            { 
-                //cpoint = get_cpoint((input[2] << 8) || input[3],input[4],input[5]);
-                //uart_write_bytes(EX_UART_NUM, (char *)&cpoint, sizeof(cpoint));
-                //uart_write_bytes(EX_UART_NUM, &nl, sizeof(nl));
-                //TODO: is this necessary or useful anyway??
-                return;
-            }
-            break;
-        case 'J': //joystick
-            //joystick, set X,Y,Z (each 0-1023)
-            if(input[1] == 'S' && len == 8) { }
-            //joystick, set Z rotate, slider left, slider right (each 0-1023)
-            if(input[1] == 'T' && len == 8) { }
-            //joystick, set buttons (bitmap for button nr 1-16)
-            if(input[1] == 'B' && len == 4) { }
-            //joystick, set hat (0-360°)
-            if(input[1] == 'H' && len == 4) { }
-            //TBD: joystick
-            ESP_LOGD(DEBUG_TAG,"TBD! joystick");
-            break;
-        
-        default: //test for management commands
-            break;
-    }
-    //mouse input
-    //M<buttons><X><Y><wheel>
-    if(input[0] == 'M' && len == 5)
-    {
-        esp_hidd_send_mouse_value(hid_conn_id,input[1],input[2],input[3],input[4]);
-        ESP_LOGD(DEBUG_TAG,"mouse movement");
-        return;
-    }
-    //BT: delete one pairing
-    if(input[0] == 'D' && input[1] == 'P' && len == 3)
-    {
-        counter = esp_ble_get_bond_device_num();
-        if(counter == 0)
-        {
-            ESP_LOGE(DEBUG_TAG,"error deleting device, no paired devices");
-            return; 
-        }
-        
-        if(input[2] >= '0' && input[2] <= '9') input[2] -= '0';
-        if(input[2] >= counter)
-        {
-            ESP_LOGE(DEBUG_TAG,"error deleting device, number out of range");
-            return;
-        }
-        if(counter >= 0)
-        {
-            btdevlist = (esp_ble_bond_dev_t *) malloc(sizeof(esp_ble_bond_dev_t)*counter);
-            if(btdevlist != NULL)
-            {
-                if(esp_ble_get_bond_device_list(&counter,btdevlist) == ESP_OK)
-                {
-                    esp_ble_remove_bond_device(btdevlist[input[2]].bd_addr);
-                } else ESP_LOGE(DEBUG_TAG,"error getting device list");
-            } else ESP_LOGE(DEBUG_TAG,"error allocating memory for device list");
-        } else ESP_LOGE(DEBUG_TAG,"error getting bonded devices count");
-        return;
-    }
-    //BT: enable/disable discoverable/pairing
-    if(input[0] == 'P' && input[1] == 'M' && len == 3)
-    {
-        if(input[2] == 0 || input[2] == '0')
-        {
-            if(esp_ble_gap_stop_advertising() != ESP_OK)
-            {
-                ESP_LOGE(DEBUG_TAG,"error stopping advertising");
-            }
-        } else if(input[2] == 1 || input[2] == '1') {
-            if(esp_ble_gap_start_advertising(&hidd_adv_params) != ESP_OK)
-            {
-                ESP_LOGE(DEBUG_TAG,"error starting advertising");
-            } else {
-                //TODO: terminate any connection to be pairable?
-            }
-        } else ESP_LOGE(DEBUG_TAG,"parameter error, either 0/1 or '0'/'1'");
-        ESP_LOGD(DEBUG_TAG,"management: pairing %d (PM)",input[2]);
-        return;
-    }
-    
-    //set BT names (either FABI or FLipMouse)
-    if(strcmp(input2,"ID_FABI") == 0)
-    {
-        config.bt_device_name_index = 0;
-        update_config();
-        ESP_LOGD(DEBUG_TAG,"management: set device name to FABI (ID_FABI)");
-        return;
-    }
-    if(strcmp(input2,"ID_FLIPMOUSE") == 0) 
-    {
-        config.bt_device_name_index = 1;
-        update_config();
-        ESP_LOGD(DEBUG_TAG,"management: set device name to FLipMouse (ID_FLIPMOUSE)");
-        return;
-    }
-    
-    
-    ESP_LOGE(DEBUG_TAG,"No command executed with: %s ; len= %d\n",input,len);
-}
-
-
-void uart_stdin(void *pvParameters)
-{
-    static uint8_t command[50];
-    static uint8_t cpointer = 0;
-    static uint8_t keycode = 0;
-    char character;
-    /** demo mouse speed */
-    #define MOUSE_SPEED 30
-    
-    //Install UART driver, and get the queue.
-    uart_driver_install(CONFIG_CONSOLE_UART_NUM, UART_FIFO_LEN * 2, UART_FIFO_LEN * 2, 0, NULL, 0);
-    
-    
-    while(1)
-    {
-        // read single byte
-        uart_read_bytes(CONFIG_CONSOLE_UART_NUM, (uint8_t*) &character, 1, portMAX_DELAY);
-		
-        //sum up characters to one \n terminated command and send it to
-        //UART parser
-        if(character == '\n' || character == '\r')
-        {
-            printf("received enter, forward command to UART parser\n");
-            command[cpointer] = 0x00;
-            process_uart(command, cpointer);
-            cpointer = 0;
-        } else {
-            if(cpointer < 50)
-            {
-                command[cpointer] = character;
-                cpointer++;
-            }
-        }
-
-        if (!sec_conn) {
-            printf("Not connected, ignoring '%c'\n", character);
-        } else {
-            switch (character){
-                case 'a':
-                    esp_hidd_send_mouse_value(hid_conn_id,0,-MOUSE_SPEED,0,0);
-                    break;
-                case 's':
-                    esp_hidd_send_mouse_value(hid_conn_id,0,0,MOUSE_SPEED,0);
-                    break;
-                case 'd':
-                    esp_hidd_send_mouse_value(hid_conn_id,0,MOUSE_SPEED,0,0);
-                    break;
-                case 'w':
-                    esp_hidd_send_mouse_value(hid_conn_id,0,0,-MOUSE_SPEED,0);
-                    break;
-                case 'l':
-                    esp_hidd_send_mouse_value(hid_conn_id,0x01,0,0,0);
-                    esp_hidd_send_mouse_value(hid_conn_id,0x00,0,0,0);
-                    break;
-                case 'r':
-                    esp_hidd_send_mouse_value(hid_conn_id,0x02,0,0,0);
-                    esp_hidd_send_mouse_value(hid_conn_id,0x00,0,0,0);
-                    break;
-                case 'y':
-                case 'z':
-                    printf("Received: %d\n",character);
-                    break;
-                case 'Q':
-                    //send only lower characters
-                    vTaskDelay(1000 / portTICK_PERIOD_MS);
-                    keycode = 28;
-                    esp_hidd_send_keyboard_value(hid_conn_id,0,&keycode,1);
-                    keycode = 0;
-                    esp_hidd_send_keyboard_value(hid_conn_id,0,&keycode,1);
-                    break;
-            }
-        }
-
-        vTaskDelay(50 / portTICK_PERIOD_MS);
-    }
-}
-
-
-void app_main()
+void app_main_bt()
 {
     esp_err_t ret;
 
@@ -657,12 +231,6 @@ void app_main()
     {
         ESP_LOGE("MAIN","error reading NVS - bt name, setting to FABI");
         config.bt_device_name_index = 0;
-    }
-    ret = nvs_get_u8(my_handle, "locale", &config.locale);
-    if(ret != ESP_OK || config.locale >= LAYOUT_MAX) 
-    {
-        ESP_LOGE("MAIN","error reading NVS - locale, setting to US_INTERNATIONAL");
-        config.locale = LAYOUT_US_INTERNATIONAL;
     }
     nvs_close(my_handle);
     
@@ -693,7 +261,7 @@ void app_main()
     }
     
     //load HID country code for locale before initialising HID
-    hidd_set_countrycode(get_hid_country_code(config.locale));
+    hidd_set_countrycode(33);
 
     if((ret = esp_hidd_profile_init()) != ESP_OK) {
         LOG_ERROR("%s init bluedroid failed\n", __func__);
@@ -708,7 +276,7 @@ void app_main()
     /** Do not use "NONE", HID over GATT requires something more than NONE */
     //esp_ble_io_cap_t iocap = ESP_IO_CAP_NONE;           //set the IO capability to No output No input
     /** CAP_OUT & CAP_IO work with Winsh***t, but you need to enter a pin which is shown in "make monitor" */
-    esp_ble_io_cap_t iocap = ESP_IO_CAP_OUT;           //set the IO capability to No output No input
+    esp_ble_io_cap_t iocap = ESP_IO_CAP_NONE;           //set the IO capability to No output No input
     //esp_ble_io_cap_t iocap = ESP_IO_CAP_IO;           //set the IO capability to No output No input
     /** CAP_IN: host shows you a pin, you have to enter it (unimplemented now) */
     //esp_ble_io_cap_t iocap = ESP_IO_CAP_IN;           //set the IO capability to No output No input
@@ -725,11 +293,255 @@ void app_main()
     and the init key means which key you can distribut to the slave. */
     esp_ble_gap_set_security_param(ESP_BLE_SM_SET_INIT_KEY, &init_key, sizeof(uint8_t));
     esp_ble_gap_set_security_param(ESP_BLE_SM_SET_RSP_KEY, &rsp_key, sizeof(uint8_t));
-
-    //init the gpio pin (not needing GPIOs by now...)
-    //gpio_demo_init();
-    
-    xTaskCreate(&uart_stdin, "stdin", 2048, NULL, 5, NULL);
-
 }
 
+#define GPIO_OUTPUT_IO_0    22
+#define GPIO_OUTPUT_IO_1    5
+#define GPIO_OUTPUT_IO_2    23
+#define GPIO_OUTPUT_IO_3    16
+#define GPIO_OUTPUT_IO_4    18
+#define GPIO_OUTPUT_IO_5    21
+#define GPIO_OUTPUT_IO_6    19
+#define GPIO_OUTPUT_IO_7    17
+
+
+#define GPIO_OUTPUT_PIN_SEL  ( \
+		(1ULL<<GPIO_OUTPUT_IO_0) | (1ULL<<GPIO_OUTPUT_IO_1) | \
+		(1ULL<<GPIO_OUTPUT_IO_2) | (1ULL<<GPIO_OUTPUT_IO_3) |	\
+		(1ULL<<GPIO_OUTPUT_IO_4) | (1ULL<<GPIO_OUTPUT_IO_5) |	\
+		(1ULL<<GPIO_OUTPUT_IO_6) | (1ULL<<GPIO_OUTPUT_IO_7))
+
+#define GPIO_INPUT_IO_0     3
+#define GPIO_INPUT_IO_1     25
+#define GPIO_INPUT_IO_2     10
+#define GPIO_INPUT_IO_3     14
+#define GPIO_INPUT_IO_4     33
+#define GPIO_INPUT_IO_5     1
+#define GPIO_INPUT_IO_6     32
+#define GPIO_INPUT_IO_7     26
+
+
+#define GPIO_INPUT_PIN_SEL  ( \
+	(1ULL<<GPIO_INPUT_IO_0) | (1ULL<<GPIO_INPUT_IO_1) |		\
+	(1ULL<<GPIO_INPUT_IO_2) | (1ULL<<GPIO_INPUT_IO_3) |		\
+	(1ULL<<GPIO_INPUT_IO_4) | (1ULL<<GPIO_INPUT_IO_5) |		\
+	(1ULL<<GPIO_INPUT_IO_6) | (1ULL<<GPIO_INPUT_IO_7))
+
+#define ESP_INTR_FLAG_DEFAULT 0
+
+static xQueueHandle gpio_evt_queue = NULL;
+
+static void IRAM_ATTR gpio_isr_handler(void* arg)
+{
+    uint32_t gpio_num = (uint32_t) arg;
+    int v = gpio_get_level(gpio_num);
+    if (v == 0)
+	    xQueueSendFromISR(gpio_evt_queue, &gpio_num, NULL);
+}
+
+static int io2row[] = {GPIO_OUTPUT_IO_0, GPIO_OUTPUT_IO_1,
+		       GPIO_OUTPUT_IO_2, GPIO_OUTPUT_IO_3,
+		       GPIO_OUTPUT_IO_4, GPIO_OUTPUT_IO_5,
+		       GPIO_OUTPUT_IO_6, GPIO_OUTPUT_IO_7};
+static int io2col[] = {GPIO_INPUT_IO_0, GPIO_INPUT_IO_1,
+		       GPIO_INPUT_IO_2, GPIO_INPUT_IO_3,
+		       GPIO_INPUT_IO_4, GPIO_INPUT_IO_5,
+		       GPIO_INPUT_IO_6, GPIO_INPUT_IO_7};
+#define IOX 8
+#define IOY 8
+static int keymap[IOX][IOY];
+static int map[IOX][IOY] = {
+	{KEY_TILDE, KEY_1, KEY_3, KEY_5, KEY_7, KEY_9, KEY_MINUS, KEY_RIGHT, },
+	{KEY_TAB, KEY_2, KEY_4, KEY_6, KEY_8, KEY_0, KEY_EQUAL, KEY_UP, },
+	{KEY_CAPS_LOCK, KEY_Q, KEY_E, KEY_T, KEY_U, KEY_O, KEY_LEFT_BRACE, KEY_DOWN, },
+	{KEY_LEFT_SHIFT, KEY_W, KEY_R, KEY_Y, KEY_I, KEY_P, KEY_RIGHT_BRACE, KEY_LEFT, },
+	{KEY_LEFT_CTRL, KEY_A, KEY_D, KEY_G, KEY_J, KEY_L, KEY_QUOTE, KEY_RIGHT_SHIFT, },
+	{KEY_LEFT_GUI, KEY_S, KEY_F, KEY_H, KEY_K, KEY_SEMICOLON, KEY_ENTER, KEY_RIGHT_CTRL, },
+	{KEY_LEFT_ALT, KEY_Z, KEY_C, KEY_B, KEY_M, KEY_PERIOD, KEY_BACKSPACE, KEY_ESC, },
+	{KEY_SPACE, KEY_X, KEY_V, KEY_N, KEY_COMMA, KEY_SLASH, KEY_BACKSLASH, KEY_RIGHT_ALT, },
+};
+
+uint8_t remove_keycode(uint8_t keycode,uint8_t *keycode_arr)
+{
+	uint8_t ret = 1;
+	if(keycode == 0) return 1;
+	//source: Arduino core Keyboard.cpp
+	for (uint8_t i=0; i<6; i++) {
+		if (keycode_arr[i] == keycode)
+		{
+			keycode_arr[i] = 0;
+			ret = 0;
+		}
+	}
+	return ret;
+}
+
+uint8_t add_keycode(uint8_t keycode,uint8_t *keycode_arr)
+{
+	uint8_t i;
+	//source: Arduino core Keyboard.cpp
+	// Add k to the key array only if it's not already present
+	// and if there is an empty slot.
+	if (keycode_arr[0] != keycode && keycode_arr[1] != keycode &&
+	    keycode_arr[2] != keycode && keycode_arr[3] != keycode &&
+	    keycode_arr[4] != keycode && keycode_arr[5] != keycode) {
+
+		for (i=0; i<6; i++) {
+			if (keycode_arr[i] == 0x00) {
+				keycode_arr[i] = keycode;
+				return 0;
+			}
+		}
+		if (i == 6) {
+			return 2;
+		}
+	}
+	return 1;
+}
+
+
+void  install_isr()
+{
+	gpio_isr_handler_add(GPIO_INPUT_IO_0, gpio_isr_handler, (void*) GPIO_INPUT_IO_0);
+	gpio_isr_handler_add(GPIO_INPUT_IO_1, gpio_isr_handler, (void*) GPIO_INPUT_IO_1);
+	gpio_isr_handler_add(GPIO_INPUT_IO_2, gpio_isr_handler, (void*) GPIO_INPUT_IO_2);
+	gpio_isr_handler_add(GPIO_INPUT_IO_3, gpio_isr_handler, (void*) GPIO_INPUT_IO_3);
+	gpio_isr_handler_add(GPIO_INPUT_IO_4, gpio_isr_handler, (void*) GPIO_INPUT_IO_4);
+	gpio_isr_handler_add(GPIO_INPUT_IO_5, gpio_isr_handler, (void*) GPIO_INPUT_IO_5);
+	gpio_isr_handler_add(GPIO_INPUT_IO_6, gpio_isr_handler, (void*) GPIO_INPUT_IO_6);
+	gpio_isr_handler_add(GPIO_INPUT_IO_7, gpio_isr_handler, (void*) GPIO_INPUT_IO_7);
+}
+
+void  uninstall_isr()
+{
+	gpio_isr_handler_remove(GPIO_INPUT_IO_0);
+	gpio_isr_handler_remove(GPIO_INPUT_IO_1);
+	gpio_isr_handler_remove(GPIO_INPUT_IO_2);
+	gpio_isr_handler_remove(GPIO_INPUT_IO_3);
+	gpio_isr_handler_remove(GPIO_INPUT_IO_4);
+	gpio_isr_handler_remove(GPIO_INPUT_IO_5);
+	gpio_isr_handler_remove(GPIO_INPUT_IO_6);
+	gpio_isr_handler_remove(GPIO_INPUT_IO_7);
+}
+
+int  check(int x, int y)
+{
+	int i, j;
+
+	for (i = 0; i < IOX; i++)
+		if (i != x)
+			for (j = 0; j < IOY; j++)
+				if (j != y)
+					if (keymap[i][j] +
+					    keymap[i][y] +
+					    keymap[x][j] >= 2)
+						return 0;
+	return 1;
+}
+
+static void  scan_proc(void* arg)
+{
+	uint32_t io_num;
+	int dcount;
+	int i, j;
+	int flag;
+
+	for (i = 0; i < IOX; i++) {
+		int x = io2row[i];
+		gpio_set_level(x, 0);
+	}
+
+	install_isr();
+
+	for (; xQueueReceive(gpio_evt_queue, &io_num, portMAX_DELAY); ) {
+		printf("leave interrupt mode %d\n", io_num);
+		uninstall_isr();
+
+		dcount = 0;
+		do {
+			flag = 0;
+			for (i = 0; i < IOX; i++) {
+				int x = io2row[i];
+
+				for (j = 0; j < IOX; j++)
+					gpio_set_level(io2row[j], 1);
+				gpio_set_level(x, 0);
+
+				vTaskDelay(1 / portTICK_RATE_MS);
+
+				for (j = 0; j < IOY; j++) {
+					int y = io2col[j];
+					int v = gpio_get_level(y);
+					if (v == 0) {
+						if (keymap[i][j] == 0 && check(i, j)) {
+							keymap[i][j] = 1;
+							dcount++;
+							int type = map[i][j] >> 8;
+							if (type == 0xf0)
+								add_keycode(map[i][j], keycode_arr);
+							else if (type == 0xe0)
+								keycode_modifier |= map[i][j] & 0xff;
+
+							printf("key down %d %d (%d)\n", i, j, dcount);
+							flag = 1;
+						}
+					} else {
+						if (keymap[i][j] == 1) {
+							keymap[i][j] = 0;
+							dcount--;
+							int type = map[i][j] >> 8;
+							if (type == 0xf0)
+								remove_keycode(map[i][j], keycode_arr);
+							else if (type == 0xe0)
+								keycode_modifier &= ~(map[i][j] & 0xff);
+
+							printf("key up %d %d (%d)\n", i, j, dcount);
+							flag = 1;
+						}
+					}
+				}
+			}
+			if (flag) {
+				esp_hidd_send_keyboard_value(hid_conn_id, keycode_modifier, keycode_arr, sizeof(keycode_arr));
+			}
+			vTaskDelay(5 / portTICK_RATE_MS);
+		} while (dcount);
+
+		for (i = 0; i < IOX; i++) {
+			int x = io2row[i];
+			gpio_set_level(x, 0);
+		}
+		install_isr();
+	}
+}
+
+void app_main_gpio()
+{
+	gpio_config_t io_conf;
+
+	io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
+	io_conf.mode = GPIO_MODE_OUTPUT | GPIO_MODE_DEF_OD;
+	io_conf.pin_bit_mask = GPIO_OUTPUT_PIN_SEL;
+	io_conf.pull_down_en = 0;
+	io_conf.pull_up_en = 1;
+	gpio_config(&io_conf);
+
+	io_conf.intr_type = GPIO_PIN_INTR_NEGEDGE;
+	io_conf.mode = GPIO_MODE_INPUT;
+	io_conf.pin_bit_mask = GPIO_INPUT_PIN_SEL | (1<<12) | (1<<27) | (1<<0) | (1<<2) | (1<<15);
+	io_conf.pull_down_en = 0;
+	io_conf.pull_up_en = 1;
+	gpio_config(&io_conf);
+
+	gpio_evt_queue = xQueueCreate(1, sizeof(uint32_t));
+
+	gpio_install_isr_service(ESP_INTR_FLAG_DEFAULT);
+
+	xTaskCreate(scan_proc, "scan_proc", 2048, NULL, 10, NULL);
+}
+
+void app_main()
+{
+	app_main_bt();
+	app_main_gpio();
+}

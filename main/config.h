@@ -159,7 +159,6 @@ typedef struct joystick_data {
 
 typedef struct config_data {
     uint8_t bt_device_name_index;
-    uint8_t locale;
 } config_data_t;
 
 
