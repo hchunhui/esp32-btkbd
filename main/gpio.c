@@ -1,0 +1,318 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/event_groups.h"
+#include "esp_system.h"
+#include "esp_event_loop.h"
+#include "esp_log.h"
+#include "driver/gpio.h"
+#include "keylayouts.h"
+#include "common.h"
+
+#define GPIO_OUTPUT_IO_0    22
+#define GPIO_OUTPUT_IO_1    5
+#define GPIO_OUTPUT_IO_2    23
+#define GPIO_OUTPUT_IO_3    16
+#define GPIO_OUTPUT_IO_4    18
+#define GPIO_OUTPUT_IO_5    21
+#define GPIO_OUTPUT_IO_6    19
+#define GPIO_OUTPUT_IO_7    17
+
+
+#define GPIO_OUTPUT_PIN_SEL  ( \
+		(1ULL<<GPIO_OUTPUT_IO_0) | (1ULL<<GPIO_OUTPUT_IO_1) | \
+		(1ULL<<GPIO_OUTPUT_IO_2) | (1ULL<<GPIO_OUTPUT_IO_3) |	\
+		(1ULL<<GPIO_OUTPUT_IO_4) | (1ULL<<GPIO_OUTPUT_IO_5) |	\
+		(1ULL<<GPIO_OUTPUT_IO_6) | (1ULL<<GPIO_OUTPUT_IO_7))
+
+#define GPIO_INPUT_IO_0     3
+#define GPIO_INPUT_IO_1     25
+#define GPIO_INPUT_IO_2     10
+#define GPIO_INPUT_IO_3     14
+#define GPIO_INPUT_IO_4     33
+#define GPIO_INPUT_IO_5     1
+#define GPIO_INPUT_IO_6     32
+#define GPIO_INPUT_IO_7     26
+
+
+#define GPIO_INPUT_PIN_SEL  ( \
+	(1ULL<<GPIO_INPUT_IO_0) | (1ULL<<GPIO_INPUT_IO_1) |		\
+	(1ULL<<GPIO_INPUT_IO_2) | (1ULL<<GPIO_INPUT_IO_3) |		\
+	(1ULL<<GPIO_INPUT_IO_4) | (1ULL<<GPIO_INPUT_IO_5) |		\
+	(1ULL<<GPIO_INPUT_IO_6) | (1ULL<<GPIO_INPUT_IO_7))
+
+#define ESP_INTR_FLAG_DEFAULT 0
+
+static xQueueHandle gpio_evt_queue = NULL;
+
+static const char *TAG = "gpio";
+
+static void IRAM_ATTR gpio_isr_handler(void* arg)
+{
+    uint32_t gpio_num = (uint32_t) arg;
+    int v = gpio_get_level(gpio_num);
+    if (v == 0)
+	    xQueueSendFromISR(gpio_evt_queue, &gpio_num, NULL);
+}
+
+static int io2row[] = {GPIO_OUTPUT_IO_0, GPIO_OUTPUT_IO_1,
+		       GPIO_OUTPUT_IO_2, GPIO_OUTPUT_IO_3,
+		       GPIO_OUTPUT_IO_4, GPIO_OUTPUT_IO_5,
+		       GPIO_OUTPUT_IO_6, GPIO_OUTPUT_IO_7};
+static int io2col[] = {GPIO_INPUT_IO_0, GPIO_INPUT_IO_1,
+		       GPIO_INPUT_IO_2, GPIO_INPUT_IO_3,
+		       GPIO_INPUT_IO_4, GPIO_INPUT_IO_5,
+		       GPIO_INPUT_IO_6, GPIO_INPUT_IO_7};
+#define IOX 8
+#define IOY 8
+static int keymap[IOX][IOY];
+static int map[2][IOX][IOY] = {
+	{
+	{KEY_TILDE, KEY_1, KEY_3, KEY_5, KEY_7, KEY_9, KEY_MINUS, KEY_RIGHT, },
+	{KEY_TAB, KEY_2, KEY_4, KEY_6, KEY_8, KEY_0, KEY_EQUAL, KEY_UP, },
+	{KEY_CAPS_LOCK, KEY_Q, KEY_E, KEY_T, KEY_U, KEY_O, KEY_LEFT_BRACE, KEY_DOWN, },
+	{KEY_LEFT_SHIFT, KEY_W, KEY_R, KEY_Y, KEY_I, KEY_P, KEY_RIGHT_BRACE, KEY_LEFT, },
+	{KEY_LEFT_CTRL, KEY_A, KEY_D, KEY_G, KEY_J, KEY_L, KEY_QUOTE, KEY_RIGHT_SHIFT, },
+	{KEY_LEFT_GUI, KEY_S, KEY_F, KEY_H, KEY_K, KEY_SEMICOLON, KEY_ENTER, KEY_RIGHT_CTRL, },
+	{KEY_LEFT_ALT, KEY_Z, KEY_C, KEY_B, KEY_M, KEY_PERIOD, KEY_BACKSPACE, 0, },
+	{KEY_SPACE, KEY_X, KEY_V, KEY_N, KEY_COMMA, KEY_SLASH, KEY_BACKSLASH, KEY_RIGHT_ALT, },
+	},
+	{
+	{KEY_ESC, KEY_F1, KEY_F3, KEY_F5, KEY_F7, KEY_F9, KEY_F11, KEY_END, },
+	{KEY_TAB, KEY_F2, KEY_F4, KEY_F6, KEY_F8, KEY_F10, KEY_F12, KEY_PAGE_UP, },
+	{KEY_CAPS_LOCK, KEY_Q, KEY_E, KEY_T, KEY_U, KEY_O, KEY_LEFT_BRACE, KEY_PAGE_DOWN, },
+	{KEY_LEFT_SHIFT, KEY_W, KEY_R, KEY_Y, KEY_I, KEY_P, KEY_RIGHT_BRACE, KEY_HOME, },
+	{KEY_LEFT_CTRL, KEY_A, KEY_D, KEY_G, KEY_J, KEY_L, KEY_QUOTE, KEY_RIGHT_SHIFT, },
+	{KEY_LEFT_GUI, KEY_S, KEY_F, KEY_H, KEY_K, KEY_SEMICOLON, KEY_ENTER, KEY_RIGHT_CTRL, },
+	{KEY_LEFT_ALT, KEY_Z, KEY_C, KEY_B, KEY_M, KEY_PERIOD, KEY_DELETE, 0, },
+	{KEY_SPACE, KEY_X, KEY_V, KEY_N, KEY_COMMA, KEY_SLASH, KEY_BACKSLASH, KEY_RIGHT_ALT, },
+	},
+};
+static int midx;
+
+TickType_t caps_time;
+static uint8_t keycode_modifier;
+static uint8_t keycode_arr[6];
+
+static uint8_t remove_keycode(uint8_t keycode,uint8_t *keycode_arr)
+{
+	uint8_t ret = 1;
+	if(keycode == 0) return 1;
+	//source: Arduino core Keyboard.cpp
+	for (uint8_t i=0; i<6; i++) {
+		if (keycode_arr[i] == keycode)
+		{
+			keycode_arr[i] = 0;
+			ret = 0;
+		}
+	}
+	return ret;
+}
+
+static uint8_t add_keycode(uint8_t keycode,uint8_t *keycode_arr)
+{
+	uint8_t i;
+	//source: Arduino core Keyboard.cpp
+	// Add k to the key array only if it's not already present
+	// and if there is an empty slot.
+	if (keycode_arr[0] != keycode && keycode_arr[1] != keycode &&
+	    keycode_arr[2] != keycode && keycode_arr[3] != keycode &&
+	    keycode_arr[4] != keycode && keycode_arr[5] != keycode) {
+
+		for (i=0; i<6; i++) {
+			if (keycode_arr[i] == 0x00) {
+				keycode_arr[i] = keycode;
+				return 0;
+			}
+		}
+		if (i == 6) {
+			return 2;
+		}
+	}
+	return 1;
+}
+
+static void clear_keycode(uint8_t *keycode_arr)
+{
+	for (int i = 0; i < 6; i++)
+		keycode_arr[i] = 0;
+}
+
+static void install_isr()
+{
+	gpio_isr_handler_add(GPIO_INPUT_IO_0, gpio_isr_handler, (void*) GPIO_INPUT_IO_0);
+	gpio_isr_handler_add(GPIO_INPUT_IO_1, gpio_isr_handler, (void*) GPIO_INPUT_IO_1);
+	gpio_isr_handler_add(GPIO_INPUT_IO_2, gpio_isr_handler, (void*) GPIO_INPUT_IO_2);
+	gpio_isr_handler_add(GPIO_INPUT_IO_3, gpio_isr_handler, (void*) GPIO_INPUT_IO_3);
+	gpio_isr_handler_add(GPIO_INPUT_IO_4, gpio_isr_handler, (void*) GPIO_INPUT_IO_4);
+	gpio_isr_handler_add(GPIO_INPUT_IO_5, gpio_isr_handler, (void*) GPIO_INPUT_IO_5);
+	gpio_isr_handler_add(GPIO_INPUT_IO_6, gpio_isr_handler, (void*) GPIO_INPUT_IO_6);
+	gpio_isr_handler_add(GPIO_INPUT_IO_7, gpio_isr_handler, (void*) GPIO_INPUT_IO_7);
+}
+
+static void uninstall_isr()
+{
+	gpio_isr_handler_remove(GPIO_INPUT_IO_0);
+	gpio_isr_handler_remove(GPIO_INPUT_IO_1);
+	gpio_isr_handler_remove(GPIO_INPUT_IO_2);
+	gpio_isr_handler_remove(GPIO_INPUT_IO_3);
+	gpio_isr_handler_remove(GPIO_INPUT_IO_4);
+	gpio_isr_handler_remove(GPIO_INPUT_IO_5);
+	gpio_isr_handler_remove(GPIO_INPUT_IO_6);
+	gpio_isr_handler_remove(GPIO_INPUT_IO_7);
+}
+
+static int check(int x, int y)
+{
+	int i, j;
+
+	for (i = 0; i < IOX; i++)
+		if (i != x)
+			for (j = 0; j < IOY; j++)
+				if (j != y)
+					if (keymap[i][j] +
+					    keymap[i][y] +
+					    keymap[x][j] >= 2)
+						return 0;
+	return 1;
+}
+
+static void xsend(int code)
+{
+	static uint8_t keycode = 0;
+	keycode = code;
+	send_keyboard_value(0, &keycode, 1);
+	keycode = 0;
+	send_keyboard_value(0, &keycode, 1);
+}
+
+static void scan_proc(void* arg)
+{
+	uint32_t io_num;
+	int dcount;
+	int i, j;
+	int flag;
+
+	for (i = 0; i < IOX; i++) {
+		int x = io2row[i];
+		gpio_set_level(x, 0);
+	}
+
+	install_isr();
+
+	for (; xQueueReceive(gpio_evt_queue, &io_num, portMAX_DELAY); ) {
+		ESP_LOGI(TAG, "leave interrupt mode %d\n", io_num);
+		uninstall_isr();
+
+		dcount = 0;
+		do {
+			flag = 0;
+			for (i = 0; i < IOX; i++) {
+				int x = io2row[i];
+
+				for (j = 0; j < IOX; j++)
+					gpio_set_level(io2row[j], 1);
+				gpio_set_level(x, 0);
+
+				vTaskDelay(1 / portTICK_RATE_MS);
+
+				for (j = 0; j < IOY; j++) {
+					int y = io2col[j];
+					int v = gpio_get_level(y);
+					if (v == 0) {
+						if (keymap[i][j] == 0 && check(i, j)) {
+							keymap[i][j] = 1;
+							dcount++;
+							int type = map[midx][i][j] >> 8;
+							if (type == 0xf0) {
+								if (map[midx][i][j] == KEY_CAPS_LOCK) {
+									TickType_t now = xTaskGetTickCount();
+									if (now - caps_time < pdMS_TO_TICKS(500)) {
+										xsend(KEY_CAPS_LOCK);
+										add_keycode(KEY_ESC & 0xff, keycode_arr);
+										caps_time = 0;
+									} else {
+										add_keycode(KEY_CAPS_LOCK & 0xff, keycode_arr);
+										caps_time = now;
+									}
+								} else {
+									add_keycode(map[midx][i][j], keycode_arr);
+								}
+							} else if (type == 0xe0)
+								keycode_modifier |= map[midx][i][j] & 0xff;
+							else {
+								if (midx == 0) {
+									midx = 1;
+									keycode_modifier = 0;
+									clear_keycode(keycode_arr);
+								}
+							}
+
+							ESP_LOGI(TAG, "key down %d %d (%d)\n", i, j, dcount);
+							flag = 1;
+						}
+					} else {
+						if (keymap[i][j] == 1) {
+							keymap[i][j] = 0;
+							dcount--;
+							int type = map[midx][i][j] >> 8;
+							if (type == 0xf0) {
+								remove_keycode(map[midx][i][j], keycode_arr);
+								if (map[midx][i][j] == KEY_CAPS_LOCK)
+									remove_keycode(KEY_ESC & 0xff, keycode_arr);
+							} else if (type == 0xe0)
+								keycode_modifier &= ~(map[midx][i][j] & 0xff);
+							else {
+								if (midx == 1) {
+									midx = 0;
+									keycode_modifier = 0;
+									clear_keycode(keycode_arr);
+								}
+							}
+
+							ESP_LOGI(TAG, "key up %d %d (%d)\n", i, j, dcount);
+							flag = 1;
+						}
+					}
+				}
+			}
+			if (flag) {
+				send_keyboard_value(keycode_modifier, keycode_arr, sizeof(keycode_arr));
+			}
+			vTaskDelay(5 / portTICK_RATE_MS);
+		} while (dcount);
+
+		for (i = 0; i < IOX; i++) {
+			int x = io2row[i];
+			gpio_set_level(x, 0);
+		}
+		install_isr();
+	}
+}
+
+void app_main_gpio()
+{
+	gpio_config_t io_conf;
+
+	io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
+	io_conf.mode = GPIO_MODE_OUTPUT | GPIO_MODE_DEF_OD;
+	io_conf.pin_bit_mask = GPIO_OUTPUT_PIN_SEL;
+	io_conf.pull_down_en = 0;
+	io_conf.pull_up_en = 1;
+	gpio_config(&io_conf);
+
+	io_conf.intr_type = GPIO_PIN_INTR_NEGEDGE;
+	io_conf.mode = GPIO_MODE_INPUT;
+	io_conf.pin_bit_mask = GPIO_INPUT_PIN_SEL | (1<<12) | (1<<27) | (1<<0) | (1<<2) | (1<<15);
+	io_conf.pull_down_en = 0;
+	io_conf.pull_up_en = 1;
+	gpio_config(&io_conf);
+
+	gpio_evt_queue = xQueueCreate(1, sizeof(uint32_t));
+
+	gpio_install_isr_service(ESP_INTR_FLAG_DEFAULT);
+
+	xTaskCreate(scan_proc, "scan_proc", 2048, NULL, 10, NULL);
+}

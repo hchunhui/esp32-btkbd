@@ -23,6 +23,7 @@
 #include "lwip/api.h"
 
 #include <sys/socket.h>
+#include "common.h"
 
 /* The examples use simple WiFi configuration that you can set via
    'make menuconfig'.
