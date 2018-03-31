@@ -47,7 +47,7 @@
 
 static xQueueHandle gpio_evt_queue = NULL;
 
-static const char *TAG = "gpio";
+static const char *TAG = "gpiokey";
 
 static void IRAM_ATTR gpio_isr_handler(void* arg)
 {
@@ -140,30 +140,6 @@ static void clear_keycode(uint8_t *keycode_arr)
 		keycode_arr[i] = 0;
 }
 
-static void install_isr()
-{
-	gpio_isr_handler_add(GPIO_INPUT_IO_0, gpio_isr_handler, (void*) GPIO_INPUT_IO_0);
-	gpio_isr_handler_add(GPIO_INPUT_IO_1, gpio_isr_handler, (void*) GPIO_INPUT_IO_1);
-	gpio_isr_handler_add(GPIO_INPUT_IO_2, gpio_isr_handler, (void*) GPIO_INPUT_IO_2);
-	gpio_isr_handler_add(GPIO_INPUT_IO_3, gpio_isr_handler, (void*) GPIO_INPUT_IO_3);
-	gpio_isr_handler_add(GPIO_INPUT_IO_4, gpio_isr_handler, (void*) GPIO_INPUT_IO_4);
-	gpio_isr_handler_add(GPIO_INPUT_IO_5, gpio_isr_handler, (void*) GPIO_INPUT_IO_5);
-	gpio_isr_handler_add(GPIO_INPUT_IO_6, gpio_isr_handler, (void*) GPIO_INPUT_IO_6);
-	gpio_isr_handler_add(GPIO_INPUT_IO_7, gpio_isr_handler, (void*) GPIO_INPUT_IO_7);
-}
-
-static void uninstall_isr()
-{
-	gpio_isr_handler_remove(GPIO_INPUT_IO_0);
-	gpio_isr_handler_remove(GPIO_INPUT_IO_1);
-	gpio_isr_handler_remove(GPIO_INPUT_IO_2);
-	gpio_isr_handler_remove(GPIO_INPUT_IO_3);
-	gpio_isr_handler_remove(GPIO_INPUT_IO_4);
-	gpio_isr_handler_remove(GPIO_INPUT_IO_5);
-	gpio_isr_handler_remove(GPIO_INPUT_IO_6);
-	gpio_isr_handler_remove(GPIO_INPUT_IO_7);
-}
-
 static int check(int x, int y)
 {
 	int i, j;
@@ -188,107 +164,128 @@ static void xsend(int code)
 	send_keyboard_value(0, &keycode, 1);
 }
 
-static void scan_proc(void* arg)
+static void on_keydown(int i, int j)
 {
-	uint32_t io_num;
-	int dcount;
+	ESP_LOGI(TAG, "key down %d %d", i, j);
+	int type = map[midx][i][j] >> 8;
+	if (type == 0xf0) {
+		if (map[midx][i][j] == KEY_CAPS_LOCK) {
+			TickType_t now = xTaskGetTickCount();
+			if (now - caps_time < pdMS_TO_TICKS(500)) {
+				xsend(KEY_CAPS_LOCK);
+				add_keycode(KEY_ESC & 0xff, keycode_arr);
+				caps_time = 0;
+			} else {
+				add_keycode(KEY_CAPS_LOCK & 0xff, keycode_arr);
+				caps_time = now;
+			}
+		} else {
+			add_keycode(map[midx][i][j], keycode_arr);
+		}
+	} else if (type == 0xe0)
+		keycode_modifier |= map[midx][i][j] & 0xff;
+	else {
+		if (midx == 0) {
+			midx = 1;
+			keycode_modifier = 0;
+			clear_keycode(keycode_arr);
+		}
+	}
+}
+
+static void on_keyup(int i, int j)
+{
+	ESP_LOGI(TAG, "key up %d %d", i, j);
+	int type = map[midx][i][j] >> 8;
+	if (type == 0xf0) {
+		remove_keycode(map[midx][i][j], keycode_arr);
+		if (map[midx][i][j] == KEY_CAPS_LOCK)
+			remove_keycode(KEY_ESC & 0xff, keycode_arr);
+	} else if (type == 0xe0)
+		keycode_modifier &= ~(map[midx][i][j] & 0xff);
+	else {
+		if (midx == 1) {
+			midx = 0;
+			keycode_modifier = 0;
+			clear_keycode(keycode_arr);
+		}
+	}
+}
+
+int scan_one()
+{
 	int i, j;
-	int flag;
+	int ret = 0;
+	int flag = 0;
 
 	for (i = 0; i < IOX; i++) {
 		int x = io2row[i];
+
+		for (j = 0; j < IOX; j++)
+			gpio_set_level(io2row[j], 1);
 		gpio_set_level(x, 0);
-	}
 
-	install_isr();
+		vTaskDelay(1 / portTICK_RATE_MS);
 
-	for (; xQueueReceive(gpio_evt_queue, &io_num, portMAX_DELAY); ) {
-		ESP_LOGI(TAG, "leave interrupt mode %d\n", io_num);
-		uninstall_isr();
-
-		dcount = 0;
-		do {
-			flag = 0;
-			for (i = 0; i < IOX; i++) {
-				int x = io2row[i];
-
-				for (j = 0; j < IOX; j++)
-					gpio_set_level(io2row[j], 1);
-				gpio_set_level(x, 0);
-
-				vTaskDelay(1 / portTICK_RATE_MS);
-
-				for (j = 0; j < IOY; j++) {
-					int y = io2col[j];
-					int v = gpio_get_level(y);
-					if (v == 0) {
-						if (keymap[i][j] == 0 && check(i, j)) {
-							keymap[i][j] = 1;
-							dcount++;
-							int type = map[midx][i][j] >> 8;
-							if (type == 0xf0) {
-								if (map[midx][i][j] == KEY_CAPS_LOCK) {
-									TickType_t now = xTaskGetTickCount();
-									if (now - caps_time < pdMS_TO_TICKS(500)) {
-										xsend(KEY_CAPS_LOCK);
-										add_keycode(KEY_ESC & 0xff, keycode_arr);
-										caps_time = 0;
-									} else {
-										add_keycode(KEY_CAPS_LOCK & 0xff, keycode_arr);
-										caps_time = now;
-									}
-								} else {
-									add_keycode(map[midx][i][j], keycode_arr);
-								}
-							} else if (type == 0xe0)
-								keycode_modifier |= map[midx][i][j] & 0xff;
-							else {
-								if (midx == 0) {
-									midx = 1;
-									keycode_modifier = 0;
-									clear_keycode(keycode_arr);
-								}
-							}
-
-							ESP_LOGI(TAG, "key down %d %d (%d)\n", i, j, dcount);
-							flag = 1;
-						}
-					} else {
-						if (keymap[i][j] == 1) {
-							keymap[i][j] = 0;
-							dcount--;
-							int type = map[midx][i][j] >> 8;
-							if (type == 0xf0) {
-								remove_keycode(map[midx][i][j], keycode_arr);
-								if (map[midx][i][j] == KEY_CAPS_LOCK)
-									remove_keycode(KEY_ESC & 0xff, keycode_arr);
-							} else if (type == 0xe0)
-								keycode_modifier &= ~(map[midx][i][j] & 0xff);
-							else {
-								if (midx == 1) {
-									midx = 0;
-									keycode_modifier = 0;
-									clear_keycode(keycode_arr);
-								}
-							}
-
-							ESP_LOGI(TAG, "key up %d %d (%d)\n", i, j, dcount);
-							flag = 1;
-						}
-					}
+		for (j = 0; j < IOY; j++) {
+			int y = io2col[j];
+			int v = gpio_get_level(y);
+			if (v == 0) {
+				if (keymap[i][j] == 0 && check(i, j)) {
+					keymap[i][j] = 1;
+					ret++;
+					flag = 1;
+					on_keydown(i, j);
+				}
+			} else {
+				if (keymap[i][j] == 1) {
+					keymap[i][j] = 0;
+					ret--;
+					flag = 1;
+					on_keyup(i, j);
 				}
 			}
-			if (flag) {
-				send_keyboard_value(keycode_modifier, keycode_arr, sizeof(keycode_arr));
-			}
+		}
+	}
+	if (flag) {
+		send_keyboard_value(keycode_modifier, keycode_arr, sizeof(keycode_arr));
+	}
+
+	return ret;
+}
+
+static void scan_proc(void* arg)
+{
+	int i;
+	uint32_t io_num = 0;
+
+	for (i = 0; i < IOX; i++)
+		gpio_set_level(io2row[i], 0);
+
+	for (i = 0; i < IOY; i++) {
+		gpio_isr_handler_add(io2col[i], gpio_isr_handler, (void*)io2col[i]);
+		gpio_intr_enable(io2col[i]);
+	}
+
+	int dcount = 0;
+	for (; xQueueReceive(gpio_evt_queue, &io_num, portMAX_DELAY);) {
+		for (i = 0; i < IOY; i++)
+			gpio_intr_disable(io2col[i]);
+
+		ESP_LOGI(TAG, "from %d", io_num);
+
+		do {
+			dcount += scan_one();
 			vTaskDelay(5 / portTICK_RATE_MS);
 		} while (dcount);
 
-		for (i = 0; i < IOX; i++) {
-			int x = io2row[i];
-			gpio_set_level(x, 0);
-		}
-		install_isr();
+		for (i = 0; i < IOX; i++)
+			gpio_set_level(io2row[i], 0);
+
+		for (i = 0; i < IOY; i++)
+			gpio_intr_enable(io2col[i]);
+
+		ESP_LOGI(TAG, "sleep");
 	}
 }
 
