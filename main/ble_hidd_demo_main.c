@@ -350,18 +350,33 @@ static int io2col[] = {GPIO_INPUT_IO_0, GPIO_INPUT_IO_1,
 #define IOX 8
 #define IOY 8
 static int keymap[IOX][IOY];
-static int map[IOX][IOY] = {
+static int map[2][IOX][IOY] = {
+	{
 	{KEY_TILDE, KEY_1, KEY_3, KEY_5, KEY_7, KEY_9, KEY_MINUS, KEY_RIGHT, },
 	{KEY_TAB, KEY_2, KEY_4, KEY_6, KEY_8, KEY_0, KEY_EQUAL, KEY_UP, },
 	{KEY_CAPS_LOCK, KEY_Q, KEY_E, KEY_T, KEY_U, KEY_O, KEY_LEFT_BRACE, KEY_DOWN, },
 	{KEY_LEFT_SHIFT, KEY_W, KEY_R, KEY_Y, KEY_I, KEY_P, KEY_RIGHT_BRACE, KEY_LEFT, },
 	{KEY_LEFT_CTRL, KEY_A, KEY_D, KEY_G, KEY_J, KEY_L, KEY_QUOTE, KEY_RIGHT_SHIFT, },
 	{KEY_LEFT_GUI, KEY_S, KEY_F, KEY_H, KEY_K, KEY_SEMICOLON, KEY_ENTER, KEY_RIGHT_CTRL, },
-	{KEY_LEFT_ALT, KEY_Z, KEY_C, KEY_B, KEY_M, KEY_PERIOD, KEY_BACKSPACE, KEY_ESC, },
+	{KEY_LEFT_ALT, KEY_Z, KEY_C, KEY_B, KEY_M, KEY_PERIOD, KEY_BACKSPACE, 0, },
 	{KEY_SPACE, KEY_X, KEY_V, KEY_N, KEY_COMMA, KEY_SLASH, KEY_BACKSLASH, KEY_RIGHT_ALT, },
+	},
+	{
+	{KEY_ESC, KEY_F1, KEY_F3, KEY_F5, KEY_F7, KEY_F9, KEY_F11, KEY_END, },
+	{KEY_TAB, KEY_F2, KEY_F4, KEY_F6, KEY_F8, KEY_F10, KEY_F12, KEY_PAGE_UP, },
+	{KEY_CAPS_LOCK, KEY_Q, KEY_E, KEY_T, KEY_U, KEY_O, KEY_LEFT_BRACE, KEY_PAGE_DOWN, },
+	{KEY_LEFT_SHIFT, KEY_W, KEY_R, KEY_Y, KEY_I, KEY_P, KEY_RIGHT_BRACE, KEY_HOME, },
+	{KEY_LEFT_CTRL, KEY_A, KEY_D, KEY_G, KEY_J, KEY_L, KEY_QUOTE, KEY_RIGHT_SHIFT, },
+	{KEY_LEFT_GUI, KEY_S, KEY_F, KEY_H, KEY_K, KEY_SEMICOLON, KEY_ENTER, KEY_RIGHT_CTRL, },
+	{KEY_LEFT_ALT, KEY_Z, KEY_C, KEY_B, KEY_M, KEY_PERIOD, KEY_DELETE, 0, },
+	{KEY_SPACE, KEY_X, KEY_V, KEY_N, KEY_COMMA, KEY_SLASH, KEY_BACKSLASH, KEY_RIGHT_ALT, },
+	},
 };
+static int midx;
 
-uint8_t remove_keycode(uint8_t keycode,uint8_t *keycode_arr)
+TickType_t caps_time;
+
+static uint8_t remove_keycode(uint8_t keycode,uint8_t *keycode_arr)
 {
 	uint8_t ret = 1;
 	if(keycode == 0) return 1;
@@ -376,7 +391,7 @@ uint8_t remove_keycode(uint8_t keycode,uint8_t *keycode_arr)
 	return ret;
 }
 
-uint8_t add_keycode(uint8_t keycode,uint8_t *keycode_arr)
+static uint8_t add_keycode(uint8_t keycode,uint8_t *keycode_arr)
 {
 	uint8_t i;
 	//source: Arduino core Keyboard.cpp
@@ -399,8 +414,14 @@ uint8_t add_keycode(uint8_t keycode,uint8_t *keycode_arr)
 	return 1;
 }
 
+static void clear_keycode(uint8_t *keycode_arr)
+{
+	for (int i = 0; i < 6; i++)
+		keycode_arr[i] = 0;
+}
 
-void  install_isr()
+
+static void install_isr()
 {
 	gpio_isr_handler_add(GPIO_INPUT_IO_0, gpio_isr_handler, (void*) GPIO_INPUT_IO_0);
 	gpio_isr_handler_add(GPIO_INPUT_IO_1, gpio_isr_handler, (void*) GPIO_INPUT_IO_1);
@@ -412,7 +433,7 @@ void  install_isr()
 	gpio_isr_handler_add(GPIO_INPUT_IO_7, gpio_isr_handler, (void*) GPIO_INPUT_IO_7);
 }
 
-void  uninstall_isr()
+static void uninstall_isr()
 {
 	gpio_isr_handler_remove(GPIO_INPUT_IO_0);
 	gpio_isr_handler_remove(GPIO_INPUT_IO_1);
@@ -424,7 +445,7 @@ void  uninstall_isr()
 	gpio_isr_handler_remove(GPIO_INPUT_IO_7);
 }
 
-int  check(int x, int y)
+static int check(int x, int y)
 {
 	int i, j;
 
@@ -437,6 +458,17 @@ int  check(int x, int y)
 					    keymap[x][j] >= 2)
 						return 0;
 	return 1;
+}
+
+static void xsend(int code)
+{
+	static uint8_t keycode = 0;
+	keycode = code;
+	printf("sending %d %x\n", keycode, keycode);
+	esp_hidd_send_keyboard_value(hid_conn_id,0,&keycode,1);
+	//vTaskDelay(1);
+	keycode = 0;
+	esp_hidd_send_keyboard_value(hid_conn_id,0,&keycode,1);
 }
 
 static void  scan_proc(void* arg)
@@ -476,11 +508,30 @@ static void  scan_proc(void* arg)
 						if (keymap[i][j] == 0 && check(i, j)) {
 							keymap[i][j] = 1;
 							dcount++;
-							int type = map[i][j] >> 8;
-							if (type == 0xf0)
-								add_keycode(map[i][j], keycode_arr);
-							else if (type == 0xe0)
-								keycode_modifier |= map[i][j] & 0xff;
+							int type = map[midx][i][j] >> 8;
+							if (type == 0xf0) {
+								if (map[midx][i][j] == KEY_CAPS_LOCK) {
+									TickType_t now = xTaskGetTickCount();
+									if (now - caps_time < pdMS_TO_TICKS(500)) {
+										xsend(KEY_CAPS_LOCK);
+										add_keycode(KEY_ESC & 0xff, keycode_arr);
+										caps_time = 0;
+									} else {
+										add_keycode(KEY_CAPS_LOCK & 0xff, keycode_arr);
+										caps_time = now;
+									}
+								} else {
+									add_keycode(map[midx][i][j], keycode_arr);
+								}
+							} else if (type == 0xe0)
+								keycode_modifier |= map[midx][i][j] & 0xff;
+							else {
+								if (midx == 0) {
+									midx = 1;
+									keycode_modifier = 0;
+									clear_keycode(keycode_arr);
+								}
+							}
 
 							printf("key down %d %d (%d)\n", i, j, dcount);
 							flag = 1;
@@ -489,11 +540,20 @@ static void  scan_proc(void* arg)
 						if (keymap[i][j] == 1) {
 							keymap[i][j] = 0;
 							dcount--;
-							int type = map[i][j] >> 8;
-							if (type == 0xf0)
-								remove_keycode(map[i][j], keycode_arr);
-							else if (type == 0xe0)
-								keycode_modifier &= ~(map[i][j] & 0xff);
+							int type = map[midx][i][j] >> 8;
+							if (type == 0xf0) {
+								remove_keycode(map[midx][i][j], keycode_arr);
+								if (map[midx][i][j] == KEY_CAPS_LOCK)
+									remove_keycode(KEY_ESC & 0xff, keycode_arr);
+							} else if (type == 0xe0)
+								keycode_modifier &= ~(map[midx][i][j] & 0xff);
+							else {
+								if (midx == 1) {
+									midx = 0;
+									keycode_modifier = 0;
+									clear_keycode(keycode_arr);
+								}
+							}
 
 							printf("key up %d %d (%d)\n", i, j, dcount);
 							flag = 1;
