@@ -213,14 +213,6 @@ void update_config()
 void app_main_bt()
 {
     esp_err_t ret;
-
-    // Initialize NVS.
-    ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK( ret );
     
     // Read config
     nvs_handle my_handle;
@@ -486,7 +478,7 @@ static void  scan_proc(void* arg)
 	install_isr();
 
 	for (; xQueueReceive(gpio_evt_queue, &io_num, portMAX_DELAY); ) {
-		printf("leave interrupt mode %d\n", io_num);
+		LOG_INFO("leave interrupt mode %d\n", io_num);
 		uninstall_isr();
 
 		dcount = 0;
@@ -533,7 +525,7 @@ static void  scan_proc(void* arg)
 								}
 							}
 
-							printf("key down %d %d (%d)\n", i, j, dcount);
+							LOG_INFO("key down %d %d (%d)\n", i, j, dcount);
 							flag = 1;
 						}
 					} else {
@@ -555,7 +547,7 @@ static void  scan_proc(void* arg)
 								}
 							}
 
-							printf("key up %d %d (%d)\n", i, j, dcount);
+							LOG_INFO("key up %d %d (%d)\n", i, j, dcount);
 							flag = 1;
 						}
 					}
@@ -600,8 +592,20 @@ void app_main_gpio()
 	xTaskCreate(scan_proc, "scan_proc", 2048, NULL, 10, NULL);
 }
 
+void app_main_wifi();
+
 void app_main()
 {
+	esp_err_t ret;
+	// Initialize NVS.
+	ret = nvs_flash_init();
+	if (ret == ESP_ERR_NVS_NO_FREE_PAGES) {
+		ESP_ERROR_CHECK(nvs_flash_erase());
+		ret = nvs_flash_init();
+	}
+	ESP_ERROR_CHECK( ret );
+
 	app_main_bt();
 	app_main_gpio();
+	app_main_wifi();
 }
