@@ -275,7 +275,7 @@ static void scan_proc(void* arg)
 
 		do {
 			dcount += scan_one();
-			vTaskDelay(5 / portTICK_RATE_MS);
+			vTaskDelay(25 / portTICK_RATE_MS);
 		} while (dcount || (--c >= 0));
 
 		for (i = 0; i < IOX; i++)
