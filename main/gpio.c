@@ -52,9 +52,7 @@ static const char *TAG = "gpiokey";
 static void IRAM_ATTR gpio_isr_handler(void* arg)
 {
     uint32_t gpio_num = (uint32_t) arg;
-    int v = gpio_get_level(gpio_num);
-    if (v == 0)
-	    xQueueSendFromISR(gpio_evt_queue, &gpio_num, NULL);
+    xQueueSendFromISR(gpio_evt_queue, &gpio_num, NULL);
 }
 
 static int io2row[] = {GPIO_OUTPUT_IO_0, GPIO_OUTPUT_IO_1,
@@ -92,7 +90,7 @@ static int map[2][IOX][IOY] = {
 };
 static int midx;
 
-TickType_t caps_time;
+static TickType_t caps_time;
 static uint8_t keycode_modifier;
 static uint8_t keycode_arr[6];
 
@@ -269,6 +267,7 @@ static void scan_proc(void* arg)
 
 	int dcount = 0;
 	for (; xQueueReceive(gpio_evt_queue, &io_num, portMAX_DELAY);) {
+		int c = 50;
 		for (i = 0; i < IOY; i++)
 			gpio_intr_disable(io2col[i]);
 
@@ -277,7 +276,7 @@ static void scan_proc(void* arg)
 		do {
 			dcount += scan_one();
 			vTaskDelay(5 / portTICK_RATE_MS);
-		} while (dcount);
+		} while (dcount || (--c >= 0));
 
 		for (i = 0; i < IOX; i++)
 			gpio_set_level(io2row[i], 0);
@@ -311,5 +310,5 @@ void app_main_gpio()
 
 	gpio_install_isr_service(ESP_INTR_FLAG_DEFAULT);
 
-	xTaskCreate(scan_proc, "scan_proc", 2048, NULL, 10, NULL);
+	xTaskCreate(scan_proc, "scan_proc", 2048, NULL, 1, NULL);
 }

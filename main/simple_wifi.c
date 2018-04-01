@@ -292,7 +292,6 @@ static void ota_thread(void *pvParameter)
 		task_fatal_error();
 	}
 	ESP_LOGI(TAG, "Prepare to restart system!");
-	vTaskDelay(5000 / portTICK_RATE_MS);
 	esp_restart();
 	return ;
 }
@@ -300,6 +299,6 @@ static void ota_thread(void *pvParameter)
 void app_main_wifi()
 {
 	wifi_init_sta();
-	xTaskCreate(logger_thread, "logger", 2048, NULL, 5, NULL);
-	xTaskCreate(ota_thread, "ota", 4096, NULL, 5, NULL);
+	xTaskCreate(logger_thread, "logger", 2048, NULL, 1, NULL);
+	xTaskCreate(ota_thread, "ota", 4096, NULL, 1, NULL);
 }
