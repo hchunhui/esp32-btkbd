@@ -81,10 +81,10 @@ static int map[2][IOX][IOY] = {
 	{
 	{KEY_ESC, KEY_F1, KEY_F3, KEY_F5, KEY_F7, KEY_F9, KEY_F11, KEY_END, },
 	{KEY_TAB, KEY_F2, KEY_F4, KEY_F6, KEY_F8, KEY_F10, KEY_F12, KEY_PAGE_UP, },
-	{KEY_CAPS_LOCK, KEY_Q, KEY_E, KEY_T, KEY_U, KEY_O, KEY_LEFT_BRACE, KEY_PAGE_DOWN, },
+	{KEY_CAPS_LOCK, KEY_Q, 0x9902, KEY_T, KEY_U, KEY_O, KEY_LEFT_BRACE, KEY_PAGE_DOWN, },
 	{KEY_LEFT_SHIFT, KEY_W, KEY_R, KEY_Y, KEY_I, KEY_P, KEY_RIGHT_BRACE, KEY_HOME, },
-	{KEY_LEFT_CTRL, KEY_A, KEY_D, KEY_G, KEY_J, KEY_L, KEY_QUOTE, KEY_RIGHT_SHIFT, },
-	{KEY_LEFT_GUI, KEY_S, KEY_F, KEY_H, KEY_K, KEY_SEMICOLON, KEY_ENTER, KEY_RIGHT_CTRL, },
+	{KEY_LEFT_CTRL, KEY_A, 0x9904, KEY_G, 0x9905, 0x9907, KEY_QUOTE, KEY_RIGHT_SHIFT, },
+	{KEY_LEFT_GUI, 0x9901, 0x9903, KEY_H, 0x9906, KEY_SEMICOLON, KEY_ENTER, KEY_RIGHT_CTRL, },
 	{KEY_LEFT_ALT, KEY_Z, KEY_C, KEY_B, KEY_M, KEY_PERIOD, KEY_DELETE, 0, },
 	{KEY_SPACE, KEY_X, KEY_V, KEY_N, KEY_COMMA, 0x99ff, KEY_BACKSLASH, KEY_RIGHT_ALT, },
 	},
@@ -217,6 +217,20 @@ static void on_keydown(int i, int j)
 		keycode_modifier |= map[midx][i][j] & 0xff;
 	else if (type == 0x99) {
 		switch(map[midx][i][j] & 0xff) {
+		case 1:
+			send_mouse_value(0,-20,0,0); break;
+		case 2:
+			send_mouse_value(0,0,-20,0); break;
+		case 3:
+			send_mouse_value(0,20,0,0); break;
+		case 4:
+			send_mouse_value(0,0,20,0); break;
+		case 5:
+			send_mouse_value(0x01,0,0,0); break;
+		case 6:
+			send_mouse_value(0x04,0,0,0); break;
+		case 7:
+			send_mouse_value(0x02,0,0,0); break;
 		case 0xff:
 			xsend_string((void *)"foobar"); break;
 		}
@@ -238,7 +252,14 @@ static void on_keyup(int i, int j)
 			remove_keycode(KEY_ESC & 0xff, keycode_arr);
 	} else if (type == 0xe0)
 		keycode_modifier &= ~(map[midx][i][j] & 0xff);
-	else {
+	else if (type == 0x99) {
+		switch(map[midx][i][j] & 0xff) {
+		case 5:
+		case 6:
+		case 7:
+			send_mouse_value(0,0,0,0); break;
+		}
+	} else {
 		if (midx == 1) {
 			midx = 0;
 			keycode_modifier = 0;

@@ -197,6 +197,11 @@ void send_keyboard_value(key_mask_t special_key_mask, uint8_t *keyboard_cmd, uin
     esp_hidd_send_keyboard_value(hid_conn_id, special_key_mask, keyboard_cmd, num_key);
 }
 
+void send_mouse_value(uint8_t mouse_button, int8_t mickeys_x, int8_t mickeys_y, int8_t wheel)
+{
+    esp_hidd_send_mouse_value(hid_conn_id, mouse_button, mickeys_x, mickeys_y, wheel);
+}
+
 void update_config()
 {
     nvs_handle my_handle;
