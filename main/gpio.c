@@ -186,7 +186,6 @@ static void on_keydown(int i, int j)
 		if (midx == 0) {
 			midx = 1;
 			keycode_modifier = 0;
-			clear_keycode(keycode_arr);
 		}
 	}
 }
