@@ -155,7 +155,7 @@ static int check(int x, int y)
 
 static void xsend(int code)
 {
-	static uint8_t keycode = 0;
+	uint8_t keycode = 0;
 	keycode = code;
 	send_keyboard_value(0, &keycode, 1);
 	keycode = 0;
