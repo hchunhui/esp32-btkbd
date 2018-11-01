@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -85,7 +86,7 @@ static int map[2][IOX][IOY] = {
 	{KEY_LEFT_CTRL, KEY_A, KEY_D, KEY_G, KEY_J, KEY_L, KEY_QUOTE, KEY_RIGHT_SHIFT, },
 	{KEY_LEFT_GUI, KEY_S, KEY_F, KEY_H, KEY_K, KEY_SEMICOLON, KEY_ENTER, KEY_RIGHT_CTRL, },
 	{KEY_LEFT_ALT, KEY_Z, KEY_C, KEY_B, KEY_M, KEY_PERIOD, KEY_DELETE, 0, },
-	{KEY_SPACE, KEY_X, KEY_V, KEY_N, KEY_COMMA, KEY_SLASH, KEY_BACKSLASH, KEY_RIGHT_ALT, },
+	{KEY_SPACE, KEY_X, KEY_V, KEY_N, KEY_COMMA, 0x99ff, KEY_BACKSLASH, KEY_RIGHT_ALT, },
 	},
 };
 static int midx;
@@ -162,6 +163,38 @@ static void xsend(int code)
 	send_keyboard_value(0, &keycode, 1);
 }
 
+static void xsend_string(const unsigned char *s)
+{
+	uint8_t keycode = 0;
+	int i;
+	for (i = 0; s[i]; i++) {
+		if(isalpha(s[i])) {
+			if (isupper(s[i])) {
+				keycode = s[i] - 'A' + KEY_A;
+				send_keyboard_value(KEY_LEFT_SHIFT, &keycode, 1);
+			} else {
+				keycode = s[i] - 'a' + KEY_A;
+				send_keyboard_value(0, &keycode, 1);
+			}
+		} else if (isdigit(s[i])) {
+			if (s[i] == '0')
+				keycode = KEY_0;
+			else
+				keycode = s[i] - '1' + KEY_1;
+			send_keyboard_value(0, &keycode, 1);
+		} else if (s[i] == '&') {
+			keycode = KEY_7;
+			send_keyboard_value(KEY_LEFT_SHIFT, &keycode, 1);
+		} else if (s[i] == '_') {
+			keycode = KEY_MINUS;
+			send_keyboard_value(KEY_LEFT_SHIFT, &keycode, 1);
+		}
+
+		keycode = 0;
+		send_keyboard_value(0, &keycode, 1);
+	}
+}
+
 static void on_keydown(int i, int j)
 {
 	ESP_LOGI(TAG, "key down %d %d", i, j);
@@ -182,7 +215,12 @@ static void on_keydown(int i, int j)
 		}
 	} else if (type == 0xe0)
 		keycode_modifier |= map[midx][i][j] & 0xff;
-	else {
+	else if (type == 0x99) {
+		switch(map[midx][i][j] & 0xff) {
+		case 0xff:
+			xsend_string((void *)"foobar"); break;
+		}
+	} else {
 		if (midx == 0) {
 			midx = 1;
 			keycode_modifier = 0;
